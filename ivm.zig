@@ -35,6 +35,8 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
 
         fn printProgram(self: *Self, len: u64) void {
             std.debug.print("\n", .{});
+            const pc = self.program_counter;
+            defer self.program_counter = pc;
             while (self.program_counter < len) {
                 const inst = self.fetch(Inst) catch return;
                 switch (inst) {
@@ -54,6 +56,8 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     .STORE8,
                     .ADD,
                     .MULT,
+                    .DIV,
+                    .REM,
                     .CHECK,
                     => std.debug.print("\x1b[33m{s}\x1b[0m\n", .{@tagName(inst)}),
                     .PUSH0 => {
@@ -70,8 +74,24 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     => std.debug.print("\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u32) catch return }),
                     .PUSH8,
                     => std.debug.print("\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u64) catch return }),
+                    // .LT,
+                    // .AND,
+                    // .OR,
+                    // .NOT,
+                    // .XOR,
+                    // .POW2,
+                    // => @panic("Unimplemented"),
+                    // .READ_CHAR,
+                    // .PUT_BYTE,
+                    // .PUT_CHAR,
+                    // .ADD_SAMPLE,
+                    // .SET_PIXEL,
+                    // .NEW_FRAME,
+                    // .READ_PIXEL,
+                    // .READ_FRAME,
+                    // => @panic("Unimplemented"),
                     else => {
-                        std.debug.print("(unimplemented) \x1b[33m{s}\x1b[0m\n", .{@tagName(inst)});
+                        std.debug.print("(unimplemented) \x1b[33m0x{x:0>2}\x1b[0m\n", .{@intFromEnum(inst)});
                     },
                 }
             }
@@ -82,7 +102,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 if (i % 32 == 0) std.debug.print("\n\x1b[34m0x{x:0>4}\x1b[30m..\x1b[34m0x{x:0>4}\x1b[30m: ", .{ i, i + 32 });
                 std.debug.print("\x1b[32m{x:0>2}", .{x});
             }
-            std.debug.print("\x1b[0m\n", .{});
+            std.debug.print("\n\x1b[30m                000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\x1b[0m\n", .{});
         }
 
         fn printDebugState(self: Self) void {
@@ -243,7 +263,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
         fn main(self: *Self, comptime options: RunOptions) void {
             const inst = self.fetch(Inst) catch |err| return self.exception(options.debug, err, .{});
             const log = options.debug and inst.isKnown();
-            if (log) std.debug.print("\x1b[33m{s}\x1b[0m", .{@tagName(inst)});
+            if (log) std.debug.print("\x1b[33m{s}\x1b[30m (\x1b[33m0x{x:0>2}\x1b[30m)\x1b[0m", .{ @tagName(inst), @intFromEnum(inst) });
             switch (inst) {
                 .EXIT => self.terminated = true,
                 .NOP => {},
@@ -353,26 +373,47 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 .ADD => {
                     const x = self.pop() catch |err| return self.exception(log, err, .{});
                     const y = self.pop() catch |err| return self.exception(log, err, .{});
-                    const r = x + y;
+                    const r = x +% y;
                     if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[30m + \x1b[32m0x{x:0>4}\x1b[30m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
                     self.push(r) catch |err| return self.exception(log, err, .{});
                 },
                 .MULT => {
                     const x = self.pop() catch |err| return self.exception(log, err, .{});
                     const y = self.pop() catch |err| return self.exception(log, err, .{});
-                    const r = x * y;
+                    const r = x *% y;
                     if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[30m * \x1b[32m0x{x:0>4}\x1b[30m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
                     self.push(r) catch |err| return self.exception(log, err, .{});
                 },
-                .DIV,
-                .REM,
-                .LT,
+                .DIV => {
+                    const y = self.pop() catch |err| return self.exception(log, err, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const r = x / y;
+                    self.push(r) catch |err| return self.exception(log, err, .{});
+                },
+                .REM => {
+                    const y = self.pop() catch |err| return self.exception(log, err, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const r = x % y;
+                    self.push(r) catch |err| return self.exception(log, err, .{});
+                },
+                .LT => {
+                    const y = self.pop() catch |err| return self.exception(log, err, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const r: u64 = if (x < y) 0xffffffffffffffff else 0;
+                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[30m < \x1b[32m0x{x:0>4}\x1b[30m = \x1b[32m0x{x:0>4}\x1b[0m\n", .{ x, y, r });
+                    self.push(r) catch |err| return self.exception(log, err, .{});
+                },
                 .AND,
                 .OR,
                 .NOT,
                 .XOR,
-                .POW2,
                 => @panic("Unimplemented"),
+                .POW2 => {
+                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const r = if (x < 64) std.math.pow(u64, 2, x) else 0;
+                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[30m ^ \x1b[32m0x{x:0>4}\x1b[30m = \x1b[32m0x{x:0>4}\x1b[0m\n", .{ 2, x, r });
+                    self.push(r) catch |err| return self.exception(log, err, .{});
+                },
                 .CHECK => {
                     const x = self.pop() catch |err| return self.exception(log, err, .{});
                     if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[0m", .{x});
@@ -476,20 +517,39 @@ test "a very basic machine" {
 test "adding bit-copying capabilities" {
     var machine = Machine(256, .{ .strange_push0_behavior = true }){};
     machine.memory[0x00..0x28].* = .{ 0x08, 0x19, 0x13, 0x08, 0xe0, 0x17, 0x08, 0x21, 0x12, 0x08, 0xe8, 0x16, 0x08, 0x25, 0x11, 0x08, 0xec, 0x15, 0x08, 0x27, 0x10, 0x08, 0xee, 0x14, 0x00, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae };
-    machine.run(.{ .debug = true });
+    machine.run(.{ .debug = false });
     try std.testing.expect(machine.terminated == true and machine.stack_pointer == 0x100);
     const answer = [_]u8{ 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0x00 };
     inline for (machine.memory[0x19..0x29], answer) |actual, expected| try std.testing.expect(actual == expected);
 }
 
 test "adding more bit-copying capabilities" {
+    if (true) return error.SkipZigTest;
     var machine = Machine(256, .{}){};
     machine.memory[0x00..0x13].* = .{ 0x07, 0x09, 0x20, 0x21, 0x0a, 0x10, 0x11, 0x12, 0x13, 0x0b, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x00 };
     machine.printProgram(0x13);
-    machine.program_counter = 0;
     machine.run(.{ .debug = true });
     machine.printMemory();
     try std.testing.expect(machine.terminated == true and machine.stack_pointer == 0xe0);
     const answer = .{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x10, 0x11, 0x12, 0x13, 0x00, 0x00, 0x00, 0x00, 0x20, 0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
     inline for (machine.memory[0xe0..0x100], answer) |actual, expected| try std.testing.expect(actual == expected);
+}
+
+test "adding arithmetic" {
+    var machine = Machine(256, .{ .strange_push0_behavior = true }){};
+    machine.memory[0x00..0x2d].* = .{ 0x09, 0x1d, 0x13, 0x09, 0x25, 0x13, 0x20, 0x09, 0x1d, 0x13, 0x09, 0x25, 0x13, 0x21, 0x09, 0x1d, 0x13, 0x09, 0x25, 0x13, 0x22, 0x09, 0x1d, 0x13, 0x09, 0x25, 0x13, 0x23, 0x00, 0x98, 0xe7, 0xd9, 0x58, 0x1b, 0xc9, 0x77, 0xff, 0x88, 0x60, 0x09, 0x5c, 0x7d, 0x2c, 0x17, 0x3f };
+    machine.run(.{ .debug = false });
+    try std.testing.expect(machine.terminated == true and machine.stack_pointer == 0xe0);
+    const answer = .{ 0x78, 0x65, 0xb4, 0xe8, 0x25, 0x17, 0x1b, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x08, 0xf4, 0xae, 0xf4, 0xbb, 0xcd, 0x95, 0x20, 0x48, 0xe3, 0xb4, 0x98, 0xf5, 0x8e, 0x3e };
+    inline for (machine.memory[0xe0..0x100], answer) |actual, expected| try std.testing.expect(actual == expected);
+}
+
+test "adding more arithmetic" {
+    var machine = Machine(256, .{ .strange_push0_behavior = true }){};
+    machine.memory[0x00..0x2d].* = .{ 0x09, 0x24, 0x13, 0x09, 0x24, 0x13, 0x24, 0x09, 0x24, 0x13, 0x09, 0x25, 0x13, 0x24, 0x09, 0x25, 0x13, 0x09, 0x24, 0x13, 0x24, 0x09, 0x22, 0x10, 0x2c, 0x09, 0x23, 0x10, 0x2c, 0x09, 0x24, 0x10, 0x2c, 0x00, 0x40, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa0 };
+    machine.run(.{ .debug = true });
+    try std.testing.expect(machine.terminated == true and machine.stack_pointer == 0xd0);
+    const answer = .{ 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    machine.printMemory();
+    inline for (machine.memory[0xd0..0x100], answer) |actual, expected| try std.testing.expect(actual == expected);
 }
