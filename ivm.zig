@@ -1,6 +1,9 @@
 const std = @import("std");
 
-pub fn Machine(comptime N: u64) type {
+const MachineOptions = struct {
+    strange_push0_behavior: bool = false,
+};
+pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
     return struct {
         /// T
         terminated: bool = false,
@@ -55,7 +58,7 @@ pub fn Machine(comptime N: u64) type {
                     => std.debug.print("\x1b[33m{s}\x1b[0m\n", .{@tagName(inst)}),
                     .PUSH0 => {
                         std.debug.print("\x1b[33m{s}\x1b[0m\n", .{@tagName(inst)});
-                        _ = self.fetch(u8) catch {};
+                        if (machine_options.strange_push0_behavior) _ = self.fetch(u8) catch {};
                     },
                     .JZ_FWD,
                     .JZ_BACK,
@@ -275,7 +278,7 @@ pub fn Machine(comptime N: u64) type {
                     self.push(self.stack_pointer) catch |err| return self.exception(log, err, .{});
                 },
                 .PUSH0 => {
-                    _ = self.fetch(u8) catch |err| return self.exception(log, err, .{});
+                    if (machine_options.strange_push0_behavior) _ = self.fetch(u8) catch |err| return self.exception(log, err, .{});
                     if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[0m", .{0});
                     self.push(0) catch |err| return self.exception(log, err, .{});
                 },
@@ -384,8 +387,8 @@ pub fn Machine(comptime N: u64) type {
                 .READ_PIXEL,
                 .READ_FRAME,
                 => @panic("Unimplemented"),
-                _ => |k| {
-                    std.debug.print("hit unknown instruction: 0x{x}\n", .{k});
+                _ => {
+                    std.debug.print("\x1b[33m0x{x:0>2}\x1b[30m: \x1b[31mUnknown instruction\x1b[0m\n", .{@intFromEnum(inst)});
                     self.terminated = true;
                 },
             }
@@ -404,7 +407,7 @@ pub fn Machine(comptime N: u64) type {
 }
 
 test "put" {
-    var machine = Machine(16){};
+    var machine = Machine(16, .{}){};
     const x: u64 = 0xa7a6a5a4a3a2a1a0;
     try machine.put(u8, @truncate(x), 0x01);
     try machine.put(u16, @truncate(x), 0x02);
@@ -415,7 +418,7 @@ test "put" {
 }
 
 test "get" {
-    var machine = Machine(16){
+    var machine = Machine(16, .{}){
         .memory = .{ 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf },
     };
     try std.testing.expect(try machine.get(u8, 1) == 0x00000000000000a1);
@@ -425,7 +428,7 @@ test "get" {
 }
 
 test "push" {
-    var machine = Machine(16){};
+    var machine = Machine(16, .{}){};
     const x: u64 = 0xafaeadacabaaa9a8;
     const y: u64 = 0xa7a6a5a4a3a2a1a0;
     try machine.push(x);
@@ -437,7 +440,7 @@ test "push" {
 }
 
 test "pop" {
-    var machine = Machine(16){
+    var machine = Machine(16, .{}){
         .memory = .{ 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf },
         .stack_pointer = 0,
     };
@@ -448,7 +451,7 @@ test "pop" {
 }
 
 test "fetch" {
-    var machine = Machine(16){
+    var machine = Machine(16, .{}){
         .memory = .{ 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf },
     };
     try std.testing.expect(try machine.fetch(u8) == 0x00000000000000a0);
@@ -462,7 +465,7 @@ test "fetch" {
 }
 
 test "a very basic machine" {
-    var machine = Machine(256){};
+    var machine = Machine(256, .{}){};
     machine.memory[0x00..0x28].* = .{ 0x01, 0x09, 0x1a, 0x09, 0x00, 0x09, 0x01, 0x09, 0x15, 0x09, 0x01, 0x09, 0x00, 0x03, 0x01, 0x00, 0x04, 0x02, 0x02, 0x00, 0x02, 0x03, 0x02, 0x04, 0x04, 0x00, 0x07, 0x06, 0x09, 0x01, 0x30, 0x09, 0xf8, 0x05, 0x09, 0x02, 0x30, 0x09, 0x00, 0x00 };
     machine.run(.{ .debug = false });
     try std.testing.expect(machine.terminated == true and machine.program_counter == 0x25 and machine.stack_pointer == 0xf8);
@@ -471,16 +474,16 @@ test "a very basic machine" {
 }
 
 test "adding bit-copying capabilities" {
-    var machine = Machine(256){};
+    var machine = Machine(256, .{ .strange_push0_behavior = true }){};
     machine.memory[0x00..0x28].* = .{ 0x08, 0x19, 0x13, 0x08, 0xe0, 0x17, 0x08, 0x21, 0x12, 0x08, 0xe8, 0x16, 0x08, 0x25, 0x11, 0x08, 0xec, 0x15, 0x08, 0x27, 0x10, 0x08, 0xee, 0x14, 0x00, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae };
-    machine.run(.{ .debug = false });
+    machine.run(.{ .debug = true });
     try std.testing.expect(machine.terminated == true and machine.stack_pointer == 0x100);
     const answer = [_]u8{ 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0x00 };
     inline for (machine.memory[0x19..0x29], answer) |actual, expected| try std.testing.expect(actual == expected);
 }
 
 test "adding more bit-copying capabilities" {
-    var machine = Machine(256){};
+    var machine = Machine(256, .{}){};
     machine.memory[0x00..0x13].* = .{ 0x07, 0x09, 0x20, 0x21, 0x0a, 0x10, 0x11, 0x12, 0x13, 0x0b, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x00 };
     machine.printProgram(0x13);
     machine.program_counter = 0;
