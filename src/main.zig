@@ -8,7 +8,8 @@ pub fn main() !void {
     var fbs = std.io.fixedBufferStream(&machine.memory);
     var fifo = std.fifo.LinearFifo(u8, .{ .Static = 4096 }).init();
     try fifo.pump(std.io.getStdIn().reader(), fbs.writer());
-    // const program_length = fbs.getWritten().len;
+    const program_length = fbs.getWritten().len;
+    try machine.setProgramLength(program_length);
     // machine.printProgram(program_length);
     machine.run(.{ .debug = true });
 }

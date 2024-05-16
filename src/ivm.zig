@@ -18,6 +18,8 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
         /// S
         stack_pointer: u64 = N,
 
+        stack_size: u64 = N,
+
         current_frame: if (builtin.target.os.tag == .windows) ?c.HANDLE else void =
             if (builtin.target.os.tag == .windows) null else {},
 
@@ -37,6 +39,16 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 printedChars += 1;
             }
             return printedChars;
+        }
+
+        pub fn setProgramLength(self: *Self, len: u64) !void {
+            if (len > N) return error.ProgramTooLarge;
+            self.stack_size = N - len;
+        }
+
+        pub fn loadProgram(self: *Self, program: []const u8) !void {
+            try self.setProgramLength(program.len);
+            @memcpy(self.memory[0..program.len], program);
         }
 
         pub fn printProgram(self: *Self, len: u64) void {
@@ -128,18 +140,22 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 }) catch unreachable;
             } else false;
             if (builtin.os.tag == .windows) {
-                w.print("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m {s} {s}", .{
+                w.print("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[90m [\x1b[32m{}\x1b[90m/\x1b[32m{}\x1b[90m]\x1b[0m {s} {s}", .{
                     if (too_big) "\x1b[90m, ...\x1b[0m" else "",
                     self.program_counter,
                     self.stack_pointer,
+                    (N - self.stack_pointer) / 8,
+                    self.stack_size / 8,
                     if (self.current_frame) |_| "\x1b[36mF\x1b[0m" else "\x1b[90m_\x1b[0m",
                     if (self.terminated) "\x1b[31mT\x1b[0m" else "\x1b[32mR\x1b[0m",
                 }) catch unreachable;
             } else {
-                w.print("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m {s}", .{
+                w.print("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[90m [\x1b[32m{}\x1b[90m/\x1b[32m{}\x1b[90m]\x1b[0m {s}", .{
                     if (too_big) "\x1b[90m, ...\x1b[0m" else "",
                     self.program_counter,
                     self.stack_pointer,
+                    (N - self.stack_pointer) / 8,
+                    self.stack_size / 8,
                     if (self.terminated) "\x1b[31mT\x1b[0m" else "\x1b[32mR\x1b[0m",
                 }) catch unreachable;
             }
@@ -150,24 +166,28 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
 
         pub const Error = error{
             AddressOutOfBounds,
+            StackUnderflow,
+            StackOverflow,
             StackPointerOutOfBounds,
             ProgramCounterOutOfBounds,
         };
 
         fn put(self: *Self, comptime T: type, x: T, a: u64) Error!void {
-            if (a > self.memory.len - @sizeOf(T)) return Error.AddressOutOfBounds;
+            if (a > N - @sizeOf(T)) return Error.AddressOutOfBounds;
             @as(*align(1) T, @ptrCast(&self.memory[a])).* = std.mem.nativeToLittle(T, x);
         }
         fn get(self: *const Self, comptime T: type, a: u64) !T {
-            if (a > self.memory.len - @sizeOf(T)) return Error.AddressOutOfBounds;
+            if (a > N - @sizeOf(T)) return Error.AddressOutOfBounds;
             return std.mem.littleToNative(T, @as(*align(1) const T, @ptrCast(&self.memory[a])).*);
         }
         pub fn push(self: *Self, x: u64) !void {
+            const next = self.stack_pointer - @sizeOf(u64);
+            if (next < N - self.stack_size) return Error.StackOverflow;
             self.stack_pointer -%= @sizeOf(u64);
             self.put(u64, x, self.stack_pointer) catch return Error.StackPointerOutOfBounds;
         }
         pub fn pop(self: *Self) !u64 {
-            const x = self.get(u64, self.stack_pointer) catch return Error.StackPointerOutOfBounds;
+            const x = self.get(u64, self.stack_pointer) catch return Error.StackUnderflow;
             self.stack_pointer +%= @sizeOf(u64);
             return x;
         }
@@ -606,7 +626,7 @@ test "fetch" {
 
 test "a very basic machine" {
     var machine = Machine(256, .{}){};
-    machine.memory[0x00..0x28].* = .{ 0x01, 0x09, 0x1a, 0x09, 0x00, 0x09, 0x01, 0x09, 0x15, 0x09, 0x01, 0x09, 0x00, 0x03, 0x01, 0x00, 0x04, 0x02, 0x02, 0x00, 0x02, 0x03, 0x02, 0x04, 0x04, 0x00, 0x07, 0x06, 0x09, 0x01, 0x30, 0x09, 0xf8, 0x05, 0x09, 0x02, 0x30, 0x09, 0x00, 0x00 };
+    try machine.loadProgram(&.{ 0x01, 0x09, 0x1a, 0x09, 0x00, 0x09, 0x01, 0x09, 0x15, 0x09, 0x01, 0x09, 0x00, 0x03, 0x01, 0x00, 0x04, 0x02, 0x02, 0x00, 0x02, 0x03, 0x02, 0x04, 0x04, 0x00, 0x07, 0x06, 0x09, 0x01, 0x30, 0x09, 0xf8, 0x05, 0x09, 0x02, 0x30, 0x09, 0x00, 0x00 });
     machine.run(.{ .debug = false });
     try std.testing.expect(machine.terminated == true and machine.program_counter == 0x25 and machine.stack_pointer == 0xf8);
     const answer = [_]u8{ 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
