@@ -127,13 +127,22 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     self.get(u64, s) catch unreachable,
                 }) catch unreachable;
             } else false;
-            w.print("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m {s} {s}", .{
-                if (too_big) "\x1b[90m, ...\x1b[0m" else "",
-                self.program_counter,
-                self.stack_pointer,
-                if (self.current_frame) |_| "\x1b[36mF\x1b[0m" else "\x1b[90m_\x1b[0m",
-                if (self.terminated) "\x1b[31mT\x1b[0m" else "\x1b[32mR\x1b[0m",
-            }) catch unreachable;
+            if (builtin.os.tag == .windows) {
+                w.print("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m {s} {s}", .{
+                    if (too_big) "\x1b[90m, ...\x1b[0m" else "",
+                    self.program_counter,
+                    self.stack_pointer,
+                    if (self.current_frame) |_| "\x1b[36mF\x1b[0m" else "\x1b[90m_\x1b[0m",
+                    if (self.terminated) "\x1b[31mT\x1b[0m" else "\x1b[32mR\x1b[0m",
+                }) catch unreachable;
+            } else {
+                w.print("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m {s}", .{
+                    if (too_big) "\x1b[90m, ...\x1b[0m" else "",
+                    self.program_counter,
+                    self.stack_pointer,
+                    if (self.terminated) "\x1b[31mT\x1b[0m" else "\x1b[32mR\x1b[0m",
+                }) catch unreachable;
+            }
             const printedChars = countPrintedChars(list.items);
             if (printedChars < 80) for (0..80 - printedChars) |_| std.debug.print(" ", .{});
             std.debug.print("{s}\n", .{list.items});
@@ -525,10 +534,12 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 if (options.debug) self.printDebugState();
                 self.main(options);
             }
-            if (self.current_frame) |handle| {
-                if (c.CloseHandle(handle) == 0) {
-                    @panic("TODO: GetLastError()");
-                } else self.current_frame = null;
+            if (builtin.os.tag == .windows) {
+                if (self.current_frame) |handle| {
+                    if (c.CloseHandle(handle) == 0) {
+                        @panic("TODO: GetLastError()");
+                    } else self.current_frame = null;
+                }
             }
             if (options.debug) self.printDebugState();
         }
