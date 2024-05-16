@@ -1,14 +1,17 @@
 const std = @import("std");
 
 fn generate(out: *std.ArrayList(u8), data_start: ?u64, data: []const u8, code: anytype) !void {
+    // TODO: integreate with real enum
     inline for (code) |instruction| {
         if (@typeInfo(@TypeOf(instruction)) == .EnumLiteral) {
             switch (instruction) {
                 .jump => try out.append(0x02),
+                .set_sp => try out.append(0x05),
                 .get_sp => try out.append(0x07),
                 .load1 => try out.append(0x10),
                 .load8 => try out.append(0x13),
                 .add => try out.append(0x20),
+                .AND => try out.append(0x28),
                 .put_byte => try out.append(0xF9),
                 else => @compileError("Unknown instruction " ++ @tagName(instruction)),
             }
@@ -49,6 +52,10 @@ pub fn main() !void {
         .add,
         .{ .push1, 0x02 },
         .jump,
+        .get_sp,
+        .{ .push1, 0x10 },
+        .add,
+        .set_sp,
     });
 
     try std.fs.cwd().writeFile(.{ .sub_path = "hello.ivm", .data = code.items });

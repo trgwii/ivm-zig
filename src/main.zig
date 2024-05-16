@@ -10,5 +10,5 @@ pub fn main() !void {
     try fifo.pump(std.io.getStdIn().reader(), fbs.writer());
     // const program_length = fbs.getWritten().len;
     // machine.printProgram(program_length);
-    machine.run(.{ .debug = false });
+    machine.run(.{ .debug = true });
 }
