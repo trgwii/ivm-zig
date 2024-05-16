@@ -10,8 +10,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe.linkLibC();
-    if (target.result.os.tag == .windows) exe.linkSystemLibrary("comdlg32");
+    if (target.result.os.tag == .windows) {
+        exe.linkLibC();
+        exe.linkSystemLibrary("comdlg32");
+    }
 
     b.installArtifact(exe);
 
@@ -29,8 +31,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    tests.linkLibC();
-    if (target.result.os.tag == .windows) tests.linkSystemLibrary("comdlg32");
+    if (target.result.os.tag == .windows) {
+        tests.linkLibC();
+        tests.linkSystemLibrary("comdlg32");
+    }
 
     const run_tests = b.addRunArtifact(tests);
 

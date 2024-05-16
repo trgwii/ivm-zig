@@ -5,6 +5,7 @@ fn generate(out: *std.ArrayList(u8), data_start: ?u64, data: []const u8, code: a
     inline for (code) |instruction| {
         if (@typeInfo(@TypeOf(instruction)) == .EnumLiteral) {
             switch (instruction) {
+                .exit => try out.append(0x00),
                 .jump => try out.append(0x02),
                 .set_sp => try out.append(0x05),
                 .get_sp => try out.append(0x07),
@@ -52,10 +53,12 @@ pub fn main() !void {
         .add,
         .{ .push1, 0x02 },
         .jump,
+        .add,
         .get_sp,
-        .{ .push1, 0x10 },
+        .{ .push1, 0x08 },
         .add,
         .set_sp,
+        .exit,
     });
 
     try std.fs.cwd().writeFile(.{ .sub_path = "hello.ivm", .data = code.items });
