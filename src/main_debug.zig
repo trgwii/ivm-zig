@@ -13,6 +13,6 @@ pub fn main() !void {
     const program_length = fbs.getWritten().len;
     try machine.setProgramLength(program_length);
     // machine.printProgram(program_length);
-    machine.run(.{ .debug = false });
-    // machine.printMemory();
+    machine.run(.{ .debug = true, .colors = false });
+    // machine.printMemory(0x200);
 }

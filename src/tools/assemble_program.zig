@@ -8,6 +8,7 @@ fn generate(out: *std.ArrayList(u8), data_start: ?u64, data: []const u8, code: a
                 .exit => try out.append(0x00),
                 .jump => try out.append(0x02),
                 .set_sp => try out.append(0x05),
+                .get_pc => try out.append(0x06),
                 .get_sp => try out.append(0x07),
                 .load1 => try out.append(0x10),
                 .load8 => try out.append(0x13),
@@ -38,24 +39,32 @@ pub fn main() !void {
     var data = std.ArrayList(u8).init(allocator);
     defer data.deinit();
 
-    try data.appendSlice("Hello, World!\n\x00");
+    try data.appendSlice(("Hello, World!\n" ** (1024)) ++ "\x00");
 
     try generate(&code, 0x20, data.items, .{
-        .{ .push1, 0x20 },
+        .get_pc,
+        .get_sp,
+        .load8,
+        .{ .push1, 0x1f },
+        .add,
         .get_sp,
         .load8,
         .load1,
         .get_sp,
         .load8,
-        .{ .jz_fwd, 0x07 },
+        .{ .jz_fwd, 0x0d },
         .put_byte,
         .{ .push1, 0x01 },
         .add,
-        .{ .push1, 0x02 },
-        .jump,
-        .add,
         .get_sp,
         .{ .push1, 0x08 },
+        .add,
+        .load8,
+        .{ .push1, 0x05 },
+        .add,
+        .jump,
+        .get_sp,
+        .{ .push1, 0x18 },
         .add,
         .set_sp,
         .exit,

@@ -6,6 +6,8 @@ const c = @cImport({
 
 const MachineOptions = struct {
     strange_push0_behavior: bool = false,
+    buffered_io: bool = true,
+    flush_every_line: bool = false,
 };
 pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
     return struct {
@@ -23,7 +25,60 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
         current_frame: if (builtin.target.os.tag == .windows) ?c.HANDLE else void =
             if (builtin.target.os.tag == .windows) null else {},
 
+        buffered_io_initialized: bool = false,
+        buffered_stderr: if (machine_options.buffered_io) std.io.BufferedWriter(4096, std.fs.File.Writer) else void = undefined,
+        buffered_stdout: if (machine_options.buffered_io) std.io.BufferedWriter(4096, std.fs.File.Writer) else void = undefined,
+
         const Self = @This();
+
+        pub fn init(self: *Self) void {
+            self.terminated = false;
+            self.program_counter = 0;
+            self.stack_pointer = N;
+            self.stack_size = N;
+            if (builtin.target.os.tag == .windows) self.current_frame = null;
+            self.initBufferedIO();
+        }
+
+        pub fn initBufferedIO(self: *Self) void {
+            if (machine_options.buffered_io) {
+                self.buffered_io_initialized = true;
+                self.buffered_stdout = std.io.bufferedWriter(std.io.getStdOut().writer());
+                self.buffered_stderr = std.io.bufferedWriter(std.io.getStdErr().writer());
+            }
+        }
+
+        pub fn debugLog(self: *Self, comptime colors: bool, comptime fmt: []const u8, args: anytype) void {
+
+            const actual_fmt = comptime if (colors) fmt else removeColorsFmt(fmt);
+            if (machine_options.buffered_io and self.buffered_io_initialized)
+                self.buffered_stderr.writer().print(actual_fmt, args) catch unreachable
+            else
+                std.io.getStdErr().writer().print(actual_fmt, args) catch unreachable;
+        }
+
+        pub fn debugFlush(self: *Self) void {
+            if (machine_options.buffered_io and self.buffered_io_initialized) {
+                self.buffered_stderr.flush() catch unreachable;
+                self.buffered_stdout.flush() catch unreachable;
+            }
+        }
+
+        fn removeColorsFmt(comptime fmt: []const u8) []const u8 {
+            comptime var result_fmt: []const u8 = &.{};
+            comptime var i: usize = 0;
+            inline while (i < fmt.len) : (i += 1) {
+                if (fmt[i] == '\x1b') {
+                    if (comptime std.mem.indexOfScalar(u8, fmt[i + 1 ..], 'm')) |idx| {
+                        i += idx + 1;
+                        continue;
+                    }
+                    continue;
+                }
+                result_fmt = result_fmt ++ &[_]u8{fmt[i]};
+            }
+            return result_fmt;
+        } 
 
         fn countPrintedChars(s: []const u8) u64 {
             var printedChars: u32 = 0;
@@ -51,8 +106,9 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
             @memcpy(self.memory[0..program.len], program);
         }
 
-        pub fn printProgram(self: *Self, len: u64) void {
-            std.debug.print("\n", .{});
+        pub fn printProgram(self: *Self, comptime colors: bool, len: u64) void {
+            defer self.debugFlush();
+            self.debugLog(colors, "\n", .{});
             const pc = self.program_counter;
             defer self.program_counter = pc;
             while (self.program_counter < len) {
@@ -85,21 +141,21 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     .CHECK,
                     .PUT_BYTE,
                     .PUT_CHAR,
-                    => std.debug.print("\x1b[33m{s}\x1b[0m\n", .{@tagName(inst)}),
+                    => self.debugLog(colors, "\x1b[33m{s}\x1b[0m\n", .{@tagName(inst)}),
                     .PUSH0 => {
-                        std.debug.print("\x1b[33m{s}\x1b[0m\n", .{@tagName(inst)});
+                        self.debugLog(colors, "\x1b[33m{s}\x1b[0m\n", .{@tagName(inst)});
                         if (machine_options.strange_push0_behavior) _ = self.fetch(u8) catch {};
                     },
                     .JZ_FWD,
                     .JZ_BACK,
                     .PUSH1,
-                    => std.debug.print("\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u8) catch return }),
+                    => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u8) catch return }),
                     .PUSH2,
-                    => std.debug.print("\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u16) catch return }),
+                    => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u16) catch return }),
                     .PUSH4,
-                    => std.debug.print("\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u32) catch return }),
+                    => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u32) catch return }),
                     .PUSH8,
-                    => std.debug.print("\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u64) catch return }),
+                    => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>4}\x1b[0m\n", .{ @tagName(inst), self.fetch(u64) catch return }),
                     // .READ_CHAR,
                     // .ADD_SAMPLE,
                     // .SET_PIXEL,
@@ -108,21 +164,27 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     // .READ_FRAME,
                     // => @panic("Unimplemented"),
                     else => {
-                        std.debug.print("(unimplemented) \x1b[33m0x{x:0>2}\x1b[0m\n", .{@intFromEnum(inst)});
+                        self.debugLog(colors, "(unimplemented) \x1b[33m0x{x:0>2}\x1b[0m\n", .{@intFromEnum(inst)});
                     },
                 }
             }
         }
 
-        fn printMemory(self: *const Self) void {
-            for (self.memory, 0..) |x, i| {
-                if (i % 32 == 0) std.debug.print("\n\x1b[34m0x{x:0>4}\x1b[90m..\x1b[34m0x{x:0>4}\x1b[90m: ", .{ i, i + 32 });
-                std.debug.print("\x1b[32m{x:0>2}", .{x});
+        pub fn printMemory(self: *Self, comptime colors: bool, limit: ?u64) void {
+            defer self.debugFlush();
+            for (self.memory[0 .. limit orelse self.memory.len], 0..) |x, i| {
+                if (i % 32 == 0) self.debugLog(colors, "\n\x1b[34m0x{x:0>4}\x1b[90m..\x1b[34m0x{x:0>4}\x1b[90m: ", .{ i, i + 32 });
+                self.debugLog(colors, "\x1b[32m{x:0>2}", .{x});
             }
-            std.debug.print("\n\x1b[90m                000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\x1b[0m\n", .{});
+            self.debugLog(colors, "\n\x1b[90m                000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\x1b[0m\n", .{});
         }
 
-        fn printDebugState(self: *const Self) void {
+        fn printDebugState(self: *Self, comptime colors: bool) void {
+            const maybeRemoveColors = if (colors) struct {
+                fn id(x: anytype) @TypeOf(x) {
+                    return x;
+                }
+            }.id else removeColorsFmt;
             var mem: [1024]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&mem);
             var list = std.ArrayList(u8).init(fba.allocator());
@@ -133,35 +195,38 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
             const too_big = while (s < N) : (s += @sizeOf(u64)) {
                 i += 1;
                 if (i > 6) break true;
-                w.print("{s}\x1b[{s}m0x{x:0>4}\x1b[0m", .{
-                    if (s == self.stack_pointer) "" else "\x1b[90m,\x1b[0m ",
+                w.print(maybeRemoveColors("{s}\x1b[{s}m0x{x:0>4}\x1b[0m"), if (colors) .{
+                    if (s == self.stack_pointer) "" else maybeRemoveColors("\x1b[90m,\x1b[0m "),
                     if (s == self.stack_pointer) "33" else "34",
+                    self.get(u64, s) catch unreachable,
+                } else .{
+                    if (s == self.stack_pointer) "" else maybeRemoveColors("\x1b[90m,\x1b[0m "),
                     self.get(u64, s) catch unreachable,
                 }) catch unreachable;
             } else false;
             if (builtin.os.tag == .windows) {
-                w.print("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[90m [\x1b[32m{}\x1b[90m/\x1b[32m{}\x1b[90m]\x1b[0m {s} {s}", .{
-                    if (too_big) "\x1b[90m, ...\x1b[0m" else "",
+                w.print(maybeRemoveColors("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[90m [\x1b[32m{}\x1b[90m/\x1b[32m{}\x1b[90m]\x1b[0m {s} {s}"), .{
+                    if (too_big) maybeRemoveColors("\x1b[90m, ...\x1b[0m") else "",
                     self.program_counter,
                     self.stack_pointer,
                     (N - self.stack_pointer) / 8,
                     self.stack_size / 8,
-                    if (self.current_frame) |_| "\x1b[36mF\x1b[0m" else "\x1b[90m_\x1b[0m",
-                    if (self.terminated) "\x1b[31mT\x1b[0m" else "\x1b[32mR\x1b[0m",
+                    if (self.current_frame) |_| maybeRemoveColors("\x1b[36mF\x1b[0m") else maybeRemoveColors("\x1b[90m_\x1b[0m"),
+                    if (self.terminated) maybeRemoveColors("\x1b[31mT\x1b[0m") else maybeRemoveColors("\x1b[32mR\x1b[0m"),
                 }) catch unreachable;
             } else {
-                w.print("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[90m [\x1b[32m{}\x1b[90m/\x1b[32m{}\x1b[90m]\x1b[0m {s}", .{
-                    if (too_big) "\x1b[90m, ...\x1b[0m" else "",
+                w.print(maybeRemoveColors("{s}] \x1b[35mPC\x1b[0m \x1b[34m0x{x:0>4}\x1b[0m \x1b[33mSP\x1b[0m \x1b[34m0x{x:0>4}\x1b[90m [\x1b[32m{}\x1b[90m/\x1b[32m{}\x1b[90m]\x1b[0m {s}"), .{
+                    if (too_big) maybeRemoveColors("\x1b[90m, ...\x1b[0m") else "",
                     self.program_counter,
                     self.stack_pointer,
                     (N - self.stack_pointer) / 8,
                     self.stack_size / 8,
-                    if (self.terminated) "\x1b[31mT\x1b[0m" else "\x1b[32mR\x1b[0m",
+                    if (self.terminated) maybeRemoveColors("\x1b[31mT\x1b[0m") else maybeRemoveColors("\x1b[32mR\x1b[0m"),
                 }) catch unreachable;
             }
             const printedChars = countPrintedChars(list.items);
-            if (printedChars < 80) for (0..80 - printedChars) |_| std.debug.print(" ", .{});
-            std.debug.print("{s}\n", .{list.items});
+            if (printedChars < 80) for (0..80 - printedChars) |_| self.debugLog(false, " ", .{});
+            self.debugLog(false, "{s}\n", .{list.items});
         }
 
         pub const Error = error{
@@ -285,202 +350,213 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 };
             }
         };
-        fn exception(self: *Self, log: bool, err: Error, values: anytype) void {
-            if (log) std.debug.print(" \x1b[31m{s}\x1b[0m", .{@errorName(err)});
+        fn exception(self: *Self, log: bool, err: Error, comptime colors: bool, values: anytype) void {
+            if (log) self.debugLog(colors, " \x1b[31m{s}\x1b[0m", .{@errorName(err)});
             if (log) {
-                if (values.len != 0) std.debug.print("\x1b[90m:\x1b[0m", .{});
-                inline for (values) |v| std.debug.print(" \x1b[34m0x{x:0>4}\x1b[0m", .{v});
+                if (values.len != 0) self.debugLog(colors, "\x1b[90m:\x1b[0m", .{});
+                inline for (values) |v| self.debugLog(colors, " \x1b[34m0x{x:0>4}\x1b[0m", .{v});
             }
-            if (log) std.debug.print("\n", .{});
+            if (log) self.debugLog(colors, "\n", .{});
             self.terminated = true;
         }
         /// The main procedure
         fn main(self: *Self, comptime options: RunOptions) void {
-            const inst = self.fetch(Inst) catch |err| return self.exception(options.debug, err, .{});
+            const inst = self.fetch(Inst) catch |err| return self.exception(options.debug, err, options.colors, .{});
             const log = options.debug and inst.isKnown();
-            if (log) std.debug.print("\x1b[33m0x{x:0>2}\x1b[90m:\x1b[33m{s}\x1b[0m", .{ @intFromEnum(inst), @tagName(inst) });
+            if (log) self.debugLog(options.colors, "\x1b[33m0x{x:0>2}\x1b[90m:\x1b[33m{s}\x1b[0m", .{ @intFromEnum(inst), @tagName(inst) });
             switch (inst) {
                 .EXIT => self.terminated = true,
                 .NOP => {},
                 .JUMP => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[35mPC\x1b[90m = \x1b[34m0x{x:0>4}\x1b[0m", .{a});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[35mPC\x1b[90m = \x1b[34m0x{x:0>4}\x1b[0m", .{a});
                     self.program_counter = a;
                 },
                 .JZ_FWD => {
-                    const a = self.fetch(u8) catch |err| return self.exception(log, err, .{});
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[90mif (\x1b[32m0x{x:0>4}\x1b[90m == \x1b[32m0\x1b[90m) then \x1b[35mPC\x1b[90m += \x1b[32m0x{x:0>4}\x1b[0m", .{ x, a });
+                    const a = self.fetch(u8) catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[90mif (\x1b[32m0x{x:0>4}\x1b[90m == \x1b[32m0\x1b[90m) then \x1b[35mPC\x1b[90m += \x1b[32m0x{x:0>4}\x1b[0m", .{ x, a });
                     if (x == 0) self.program_counter += a;
                 },
                 .JZ_BACK => {
-                    const a = self.fetch(u8) catch |err| return self.exception(log, err, .{});
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[90mif (\x1b[32m0x{x:0>4}\x1b[90m == \x1b[32m0\x1b[90m) then \x1b[35mPC\x1b[90m -= (\x1b[32m0x{x:0>4}\x1b[90m + \x1b[32m1\x1b[90m)\x1b[0m", .{ x, a });
+                    const a = self.fetch(u8) catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[90mif (\x1b[32m0x{x:0>4}\x1b[90m == \x1b[32m0\x1b[90m) then \x1b[35mPC\x1b[90m -= (\x1b[32m0x{x:0>4}\x1b[90m + \x1b[32m1\x1b[90m)\x1b[0m", .{ x, a });
                     if (x == 0) self.program_counter -= a + 1;
                 },
                 .SET_SP => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[33mSP\x1b[90m = \x1b[34m0x{x:0>4}\x1b[0m", .{a});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[33mSP\x1b[90m = \x1b[34m0x{x:0>4}\x1b[0m", .{a});
+                    if (a > N) return self.exception(log, Error.StackUnderflow, options.colors, .{});
+                    if (a < N - self.stack_size) return self.exception(log, Error.StackOverflow, options.colors, .{});
                     self.stack_pointer = a;
                 },
                 .GET_PC => {
-                    if (log) std.debug.print(" \x1b[34m0x{x:0>4}\x1b[0m", .{self.program_counter});
-                    self.push(self.program_counter) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[34m0x{x:0>4}\x1b[0m", .{self.program_counter});
+                    self.push(self.program_counter) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .GET_SP => {
-                    if (log) std.debug.print(" \x1b[34m0x{x:0>4}\x1b[0m", .{self.stack_pointer});
-                    self.push(self.stack_pointer) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[34m0x{x:0>4}\x1b[0m", .{self.stack_pointer});
+                    self.push(self.stack_pointer) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .PUSH0 => {
-                    if (machine_options.strange_push0_behavior) _ = self.fetch(u8) catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[0m", .{0});
-                    self.push(0) catch |err| return self.exception(log, err, .{});
+                    if (machine_options.strange_push0_behavior) _ = self.fetch(u8) catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[0m", .{0});
+                    self.push(0) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .PUSH1 => {
-                    const x = self.fetch(u8) catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[0m", .{x});
-                    self.push(x) catch |err| return self.exception(log, err, .{});
+                    const x = self.fetch(u8) catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[0m", .{x});
+                    self.push(x) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .PUSH2 => {
-                    const x = self.fetch(u16) catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[0m", .{x});
-                    self.push(x) catch |err| return self.exception(log, err, .{});
+                    const x = self.fetch(u16) catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[0m", .{x});
+                    self.push(x) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .PUSH4 => {
-                    const x = self.fetch(u32) catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[0m", .{x});
-                    self.push(x) catch |err| return self.exception(log, err, .{});
+                    const x = self.fetch(u32) catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[0m", .{x});
+                    self.push(x) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .PUSH8 => {
-                    const x = self.fetch(u64) catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[0m", .{x});
-                    self.push(x) catch |err| return self.exception(log, err, .{});
+                    const x = self.fetch(u64) catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[0m", .{x});
+                    self.push(x) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .LOAD1 => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.get(u8, a) catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4} \x1b[90mfrom \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
-                    self.push(x) catch |err| return self.exception(log, err, .{});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.get(u8, a) catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4} \x1b[90mfrom \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
+                    self.push(x) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .LOAD2 => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.get(u16, a) catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4} \x1b[90mfrom \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
-                    self.push(x) catch |err| return self.exception(log, err, .{});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.get(u16, a) catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4} \x1b[90mfrom \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
+                    self.push(x) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .LOAD4 => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.get(u32, a) catch |err| return self.exception(log, err, .{a});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4} \x1b[90mfrom \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
-                    self.push(x) catch |err| return self.exception(log, err, .{});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.get(u32, a) catch |err| return self.exception(log, err, options.colors, .{a});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4} \x1b[90mfrom \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
+                    self.push(x) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .LOAD8 => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.get(u64, a) catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4} \x1b[90mfrom \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
-                    self.push(x) catch |err| return self.exception(log, err, .{});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.get(u64, a) catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4} \x1b[90mfrom \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
+                    self.push(x) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .STORE1 => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x: u8 = @truncate(self.pop() catch |err| return self.exception(log, err, .{}));
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4} \x1b[90minto \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
-                    self.put(u8, x, a) catch |err| return self.exception(log, err, .{});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x: u8 = @truncate(self.pop() catch |err| return self.exception(log, err, options.colors, .{}));
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4} \x1b[90minto \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
+                    self.put(u8, x, a) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .STORE2 => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x: u16 = @truncate(self.pop() catch |err| return self.exception(log, err, .{}));
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4} \x1b[90minto \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
-                    self.put(u16, x, a) catch |err| return self.exception(log, err, .{});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x: u16 = @truncate(self.pop() catch |err| return self.exception(log, err, options.colors, .{}));
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4} \x1b[90minto \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
+                    self.put(u16, x, a) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .STORE4 => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x: u32 = @truncate(self.pop() catch |err| return self.exception(log, err, .{}));
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4} \x1b[90minto \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
-                    self.put(u32, x, a) catch |err| return self.exception(log, err, .{});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x: u32 = @truncate(self.pop() catch |err| return self.exception(log, err, options.colors, .{}));
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4} \x1b[90minto \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
+                    self.put(u32, x, a) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .STORE8 => {
-                    const a = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x: u64 = self.pop() catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4} \x1b[90minto \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
-                    self.put(u64, x, a) catch |err| return self.exception(log, err, .{});
+                    const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x: u64 = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4} \x1b[90minto \x1b[34m0x{x:0>4}\x1b[0m", .{ x, a });
+                    self.put(u64, x, a) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .ADD => {
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
-                    const y = self.pop() catch |err| return self.exception(log, err, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r = x +% y;
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[90m + \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[90m + \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .MULT => {
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
-                    const y = self.pop() catch |err| return self.exception(log, err, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r = x *% y;
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[90m * \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[90m * \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .DIV => {
-                    const y = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r = x / y;
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[90m / \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .REM => {
-                    const y = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r = x % y;
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[90m % \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .LT => {
-                    const y = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r: u64 = if (x < y) 0xffffffffffffffff else 0;
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[90m < \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[90m < \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .AND => {
-                    const y = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r = x & y;
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[90m & \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[90m & \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .OR => {
-                    const y = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r = x | y;
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[90m | \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[90m | \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .NOT => {
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r = ~x;
-                    if (log) std.debug.print(" \x1b[90m~\x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, r });
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[90m~\x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .XOR => {
-                    const y = self.pop() catch |err| return self.exception(log, err, .{});
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r = x ^ y;
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[90m ^ \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[90m ^ \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ x, y, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .POW2 => {
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const r = if (x < 64) std.math.pow(u64, 2, x) else 0;
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[90m ^ \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ 2, x, r });
-                    self.push(r) catch |err| return self.exception(log, err, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[90m ^ \x1b[32m0x{x:0>4}\x1b[90m = \x1b[32m0x{x:0>4}\x1b[0m", .{ 2, x, r });
+                    self.push(r) catch |err| return self.exception(log, err, options.colors, .{});
                 },
                 .CHECK => {
-                    const x = self.pop() catch |err| return self.exception(log, err, .{});
-                    if (log) std.debug.print(" \x1b[32m0x{x:0>4}\x1b[0m", .{x});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>4}\x1b[0m", .{x});
                     if (x >= 2) self.terminated = true;
                 },
                 .READ_CHAR => @panic("Unimplemented"),
                 .PUT_BYTE, .PUT_CHAR => {
-                    const char: u8 = @intCast(self.pop() catch |err| return self.exception(log, err, .{}));
-                    if (log) std.debug.print(" \x1b[32m'{c}'\x1b[0m", .{char});
-                    std.io.getStdOut().writer().writeByte(char) catch unreachable;
+                    const char: u8 = @intCast(self.pop() catch |err| return self.exception(log, err, options.colors, .{}));
+                    if (log) self.debugLog(options.colors, " \x1b[32m'{c}'\x1b[0m", .{char});
+                    if (machine_options.buffered_io and self.buffered_io_initialized) {
+                        self.buffered_stdout.writer().writeByte(char) catch unreachable;
+                        if (machine_options.flush_every_line and char == '\n') {
+                            self.debugFlush();
+                        }
+                    } else {
+                        std.io.getStdOut().writer().writeByte(char) catch unreachable;
+                    }
                 },
                 .ADD_SAMPLE,
                 .SET_PIXEL,
@@ -501,29 +577,29 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                         const err = c.CommDlgExtendedError();
                         switch (err) {
                             0 => {
-                                std.debug.print(" \x1b[31mNo frame file selected\x1b[0m", .{});
+                                self.debugLog(options.colors, " \x1b[31mNo frame file selected\x1b[0m", .{});
                                 self.terminated = true;
                             },
-                            c.CDERR_DIALOGFAILURE => std.debug.print(" \x1b[31mGetOpenFileNameA: DIALOGFAILURE\x1b[0m", .{}),
-                            c.CDERR_FINDRESFAILURE => std.debug.print(" \x1b[31mGetOpenFileNameA: FINDRESFAILURE\x1b[0m", .{}),
-                            c.CDERR_INITIALIZATION => std.debug.print(" \x1b[31mGetOpenFileNameA: INITIALIZATION\x1b[0m", .{}),
-                            c.CDERR_LOADRESFAILURE => std.debug.print(" \x1b[31mGetOpenFileNameA: LOADRESFAILURE\x1b[0m", .{}),
-                            c.CDERR_LOADSTRFAILURE => std.debug.print(" \x1b[31mGetOpenFileNameA: LOADSTRFAILURE\x1b[0m", .{}),
-                            c.CDERR_LOCKRESFAILURE => std.debug.print(" \x1b[31mGetOpenFileNameA: LOCKRESFAILURE\x1b[0m", .{}),
-                            c.CDERR_MEMALLOCFAILURE => std.debug.print(" \x1b[31mGetOpenFileNameA: MEMALLOCFAILURE\x1b[0m", .{}),
-                            c.CDERR_MEMLOCKFAILURE => std.debug.print(" \x1b[31mGetOpenFileNameA: MEMLOCKFAILURE\x1b[0m", .{}),
-                            c.CDERR_NOHINSTANCE => std.debug.print(" \x1b[31mGetOpenFileNameA: NOHINSTANCE\x1b[0m", .{}),
-                            c.CDERR_NOHOOK => std.debug.print(" \x1b[31mGetOpenFileNameA: NOHOOK\x1b[0m", .{}),
-                            c.CDERR_NOTEMPLATE => std.debug.print(" \x1b[31mGetOpenFileNameA: NOTEMPLATE\x1b[0m", .{}),
-                            c.CDERR_REGISTERMSGFAIL => std.debug.print(" \x1b[31mGetOpenFileNameA: REGISTERMSGFAIL\x1b[0m", .{}),
-                            c.CDERR_STRUCTSIZE => std.debug.print(" \x1b[31mGetOpenFileNameA: STRUCTSIZE\x1b[0m", .{}),
-                            else => std.debug.print(" \x1b[31mGetOpenFileNameA: CommDlgExtendedError({})\x1b[0m", .{err}),
+                            c.CDERR_DIALOGFAILURE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: DIALOGFAILURE\x1b[0m", .{}),
+                            c.CDERR_FINDRESFAILURE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: FINDRESFAILURE\x1b[0m", .{}),
+                            c.CDERR_INITIALIZATION => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: INITIALIZATION\x1b[0m", .{}),
+                            c.CDERR_LOADRESFAILURE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: LOADRESFAILURE\x1b[0m", .{}),
+                            c.CDERR_LOADSTRFAILURE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: LOADSTRFAILURE\x1b[0m", .{}),
+                            c.CDERR_LOCKRESFAILURE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: LOCKRESFAILURE\x1b[0m", .{}),
+                            c.CDERR_MEMALLOCFAILURE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: MEMALLOCFAILURE\x1b[0m", .{}),
+                            c.CDERR_MEMLOCKFAILURE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: MEMLOCKFAILURE\x1b[0m", .{}),
+                            c.CDERR_NOHINSTANCE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: NOHINSTANCE\x1b[0m", .{}),
+                            c.CDERR_NOHOOK => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: NOHOOK\x1b[0m", .{}),
+                            c.CDERR_NOTEMPLATE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: NOTEMPLATE\x1b[0m", .{}),
+                            c.CDERR_REGISTERMSGFAIL => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: REGISTERMSGFAIL\x1b[0m", .{}),
+                            c.CDERR_STRUCTSIZE => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: STRUCTSIZE\x1b[0m", .{}),
+                            else => self.debugLog(options.colors, " \x1b[31mGetOpenFileNameA: CommDlgExtendedError({})\x1b[0m", .{err}),
                         }
-                        std.debug.print("\n", .{});
+                        self.debugLog(options.colors, "\n", .{});
                         return;
                     }
                     const file_name = file_string[ofna.nFileOffset..];
-                    std.debug.print(" \x1b[32m{s}\x1b[0m", .{file_name});
+                    self.debugLog(options.colors, " \x1b[32m{s}\x1b[0m", .{file_name});
                     const fd = c.CreateFileA(
                         &file_string,
                         c.GENERIC_READ,
@@ -534,24 +610,25 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                         null,
                     );
                     if (fd == c.INVALID_HANDLE_VALUE) {
-                        std.debug.print(" \x1b[31mFailed to open {s} (TODO: GetLastError)\x1b[0m\n", .{file_name});
+                        self.debugLog(options.colors, " \x1b[31mFailed to open {s} (TODO: GetLastError)\x1b[0m\n", .{file_name});
                         self.terminated = true;
                         return;
                     }
                     self.current_frame = fd;
                 },
                 _ => {
-                    std.debug.print("\x1b[33m0x{x:0>2}\x1b[90m: \x1b[31mUnknown instruction\x1b[0m\n", .{@intFromEnum(inst)});
+                    self.debugLog(options.colors, "\x1b[33m0x{x:0>2}\x1b[90m: \x1b[31mUnknown instruction\x1b[0m\n", .{@intFromEnum(inst)});
                     self.terminated = true;
                 },
             }
-            if (log) std.debug.print("\n", .{});
+            if (log) self.debugLog(options.colors, "\n", .{});
         }
-        pub const RunOptions = struct { debug: bool = false };
+        pub const RunOptions = struct { debug: bool = false, colors: bool = true };
         pub fn run(self: *Self, comptime options: RunOptions) void {
-            if (options.debug) std.debug.print("\n", .{});
+            defer self.debugFlush();
+            if (options.debug) self.debugLog(options.colors, "\n", .{});
             while (!self.terminated) {
-                if (options.debug) self.printDebugState();
+                if (options.debug) self.printDebugState(options.colors);
                 self.main(options);
             }
             if (builtin.os.tag == .windows) {
@@ -561,7 +638,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     } else self.current_frame = null;
                 }
             }
-            if (options.debug) self.printDebugState();
+            if (options.debug) self.printDebugState(options.colors);
         }
     };
 }
