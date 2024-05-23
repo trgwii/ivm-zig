@@ -11,6 +11,8 @@ gcc -Ofast -o yafie/ivm_emu ../../../github.com/immortalvm/yet-another-fast-ivm-
 gcc -Ofast -DVERBOSE=4 -o yafie/ivm_emu_debug ../../../github.com/immortalvm/yet-another-fast-ivm-emulator/ivm_emu.c
 # zig build-exe -lc -O ReleaseFast -DVERBOSE=4 ../../../github.com/immortalvm/yet-another-fast-ivm-emulator/ivm_emu.c --name ivm_emu_debug
 # zig build-exe -lc -O ReleaseFast -DVERBOSE=0 ../../../github.com/immortalvm/yet-another-fast-ivm-emulator/ivm_emu.c --name ivm_emu
+strace ./zig-out/bin/ivm-zig hello.ivm 2>ivm-zig_trace.log >/dev/null
+strace ./yafie/ivm_emu hello.ivm 2>yafie_trace.log >/dev/null
 sudo ~/Projects/github.com/andrewrk/poop/zig-out/x86_64-linux-poop\
  "./zig-out/bin/ivm-zig hello.ivm"\
  "./yafie/ivm_emu hello.ivm"
