@@ -39,7 +39,7 @@ pub fn main() !void {
     var data = std.ArrayList(u8).init(allocator);
     defer data.deinit();
 
-    try data.appendSlice(("Hello, World!\n" ** (1024)) ++ "\x00");
+    try data.appendSlice(("Hello, World!\n" ** (1024 * 16)) ++ "\x00");
 
     try generate(&code, 0x20, data.items, .{
         .get_pc,

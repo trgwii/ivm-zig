@@ -25,9 +25,10 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
         current_frame: if (builtin.target.os.tag == .windows) ?c.HANDLE else void =
             if (builtin.target.os.tag == .windows) null else {},
 
-        buffered_io_initialized: bool = false,
-        buffered_stderr: if (machine_options.buffered_io) std.io.BufferedWriter(4096, std.fs.File.Writer) else void = undefined,
-        buffered_stdout: if (machine_options.buffered_io) std.io.BufferedWriter(4096, std.fs.File.Writer) else void = undefined,
+        buffered_stderr: if (machine_options.buffered_io) std.io.BufferedWriter(4096, std.fs.File.Writer) else void =
+            if (machine_options.buffered_io) std.io.bufferedWriter(std.io.getStdErr().writer()) else {},
+        buffered_stdout: if (machine_options.buffered_io) std.io.BufferedWriter(4096, std.fs.File.Writer) else void =
+            if (machine_options.buffered_io) std.io.bufferedWriter(std.io.getStdOut().writer()) else {},
 
         const Self = @This();
 
@@ -42,23 +43,21 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
 
         pub fn initBufferedIO(self: *Self) void {
             if (machine_options.buffered_io) {
-                self.buffered_io_initialized = true;
-                self.buffered_stdout = std.io.bufferedWriter(std.io.getStdOut().writer());
                 self.buffered_stderr = std.io.bufferedWriter(std.io.getStdErr().writer());
+                self.buffered_stdout = std.io.bufferedWriter(std.io.getStdOut().writer());
             }
         }
 
         pub fn debugLog(self: *Self, comptime colors: bool, comptime fmt: []const u8, args: anytype) void {
-
             const actual_fmt = comptime if (colors) fmt else removeColorsFmt(fmt);
-            if (machine_options.buffered_io and self.buffered_io_initialized)
+            if (machine_options.buffered_io)
                 self.buffered_stderr.writer().print(actual_fmt, args) catch unreachable
             else
                 std.io.getStdErr().writer().print(actual_fmt, args) catch unreachable;
         }
 
         pub fn debugFlush(self: *Self) void {
-            if (machine_options.buffered_io and self.buffered_io_initialized) {
+            if (machine_options.buffered_io) {
                 self.buffered_stderr.flush() catch unreachable;
                 self.buffered_stdout.flush() catch unreachable;
             }
@@ -78,7 +77,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 result_fmt = result_fmt ++ &[_]u8{fmt[i]};
             }
             return result_fmt;
-        } 
+        }
 
         fn countPrintedChars(s: []const u8) u64 {
             var printedChars: u32 = 0;
@@ -549,7 +548,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 .PUT_BYTE, .PUT_CHAR => {
                     const char: u8 = @intCast(self.pop() catch |err| return self.exception(log, err, options.colors, .{}));
                     if (log) self.debugLog(options.colors, " \x1b[32m'{c}'\x1b[0m", .{char});
-                    if (machine_options.buffered_io and self.buffered_io_initialized) {
+                    if (machine_options.buffered_io) {
                         self.buffered_stdout.writer().writeByte(char) catch unreachable;
                         if (machine_options.flush_every_line and char == '\n') {
                             self.debugFlush();
