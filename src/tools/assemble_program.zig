@@ -3,7 +3,7 @@ const std = @import("std");
 fn generate(out: *std.ArrayList(u8), data_start: ?u64, data: []const u8, code: anytype) !void {
     // TODO: integreate with real enum
     inline for (code) |instruction| {
-        if (@typeInfo(@TypeOf(instruction)) == .EnumLiteral) {
+        if (@typeInfo(@TypeOf(instruction)) == .enum_literal) {
             switch (instruction) {
                 .exit => try out.append(0x00),
                 .jump => try out.append(0x02),

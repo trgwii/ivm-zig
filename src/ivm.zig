@@ -28,9 +28,9 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
             if (builtin.target.os.tag == .windows) null else {},
 
         buffered_stderr: if (machine_options.buffered_io) std.io.BufferedWriter(BufferedIOBufferSize, std.fs.File.Writer) else void =
-            if (machine_options.buffered_io) .{ .unbuffered_writer = std.io.getStdErr().writer() } else {},
+            undefined,
         buffered_stdout: if (machine_options.buffered_io) std.io.BufferedWriter(BufferedIOBufferSize, std.fs.File.Writer) else void =
-            if (machine_options.buffered_io) .{ .unbuffered_writer = std.io.getStdOut().writer() } else {},
+            undefined,
 
         const Self = @This();
 
@@ -151,12 +151,9 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     .JZ_BACK,
                     .PUSH1,
                     => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>2}\x1b[0m\n", .{ @tagName(inst), self.fetch(u8) catch return }),
-                    .PUSH2,
-                    => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>2}\x1b[0m\n", .{ @tagName(inst), self.fetch(u16) catch return }),
-                    .PUSH4,
-                    => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>2}\x1b[0m\n", .{ @tagName(inst), self.fetch(u32) catch return }),
-                    .PUSH8,
-                    => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>2}\x1b[0m\n", .{ @tagName(inst), self.fetch(u64) catch return }),
+                    .PUSH2 => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>2}\x1b[0m\n", .{ @tagName(inst), self.fetch(u16) catch return }),
+                    .PUSH4 => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>2}\x1b[0m\n", .{ @tagName(inst), self.fetch(u32) catch return }),
+                    .PUSH8 => self.debugLog(colors, "\x1b[33m{s}\x1b[32m 0x{x:0>2}\x1b[0m\n", .{ @tagName(inst), self.fetch(u64) catch return }),
                     // .READ_CHAR,
                     // .ADD_SAMPLE,
                     // .SET_PIXEL,
@@ -575,7 +572,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 => @panic("Unimplemented"),
                 .READ_FRAME => {
                     if (builtin.os.tag != .windows) @panic("Unimplemented");
-                    var file_string: [std.fs.MAX_PATH_BYTES]u8 = [_]u8{0} ** std.fs.MAX_PATH_BYTES;
+                    var file_string: [std.fs.max_path_bytes]u8 = [_]u8{0} ** std.fs.max_path_bytes;
                     var ofna = c.OPENFILENAMEA{
                         .lStructSize = @sizeOf(c.OPENFILENAMEA),
                         .lpstrFile = &file_string,
