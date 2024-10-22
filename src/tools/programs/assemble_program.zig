@@ -23,7 +23,7 @@ fn generate(out: *std.ArrayList(u8), data_start: ?u64, data: []const u8, code: a
         } else switch (instruction[0]) {
             .jz_fwd => try out.appendSlice(&.{ 0x03, instruction[1] }),
             .push1 => try out.appendSlice(&.{ 0x09, instruction[1] }),
-            .push8 => try out.appendSlice(&.{0x0c} ++ &@as([8]u8, @bitCast(@as(u64, instruction[1])))),
+            .push8 => try out.appendSlice(&[_]u8{0x0c} ++ &@as([8]u8, @bitCast(@as(u64, instruction[1])))),
             else => @compileError("Unknown instruction " ++ @tagName(instruction[0])),
         }
     }

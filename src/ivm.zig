@@ -27,7 +27,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
         current_read_frame: if (builtin.target.os.tag == .windows) ?c.HANDLE else void =
             if (builtin.target.os.tag == .windows) null else {},
 
-        current_write_frame: void,
+        current_write_frame: c.HWND,
 
         buffered_stderr: if (machine_options.buffered_io) std.io.BufferedWriter(BufferedIOBufferSize, std.fs.File.Writer) else void =
             undefined,
@@ -567,34 +567,29 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                         std.io.getStdOut().writer().writeByte(char) catch unreachable;
                     }
                 },
+                .SET_PIXEL => {
+                    const b = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const g = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const r = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m{d}\x1b[90m,\x1b[32m{d}\x1b[90m {x:0>2}{x:0>2}{x:0>2}\x1b[0m", .{ x, y, r, g, b });
+                    if (self.current_write_frame != null) {
+                        const dc = c.GetDC(self.current_write_frame);
+                        _ = c.SetPixel(dc, @intCast(x), @intCast(y), c.RGB(r, g, b));
+                    }
+                },
                 .NEW_FRAME => {
                     // open window with dimensions from stack
                     const rate = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const height = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const width = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     if (log) self.debugLog(options.colors, " \x1b[32m{d}\x1b[90m x \x1b[32m{d}\x1b[90m r{d}\x1b[0m", .{ width, height, rate });
-                    const instance = c.GetModuleHandleA(0);
-                    const windowClassOptions = c.WNDCLASSEXA{
-                        .cbSize = @sizeOf(c.WNDCLASSEXA),
-                        .style = c.CS_OWNDC,
-                        .lpfnWndProc = struct {
-                            fn wndProc(hWnd: c.HWND, uMsg: c.UINT, wParam: c.WPARAM, lParam: c.LPARAM) callconv(.C) c.LRESULT {
-                                return c.DefWindowProcA(hWnd, uMsg, wParam, lParam);
-                            }
-                        }.wndProc,
-                        .cbClsExtra = 0,
-                        .cbWndExtra = 0,
-                        .hInstance = instance,
-                        .hIcon = null,
-                        .hCursor = null,
-                        .hbrBackground = null,
-                        .lpszMenuName = null,
-                        .lpszClassName = "iVM Frame",
-                        .hIconSm = null,
-                    };
-                    const windowClass = c.RegisterClassExA(&windowClassOptions);
-                    _ = windowClass; // autofix
-                    const window = c.CreateWindowExA(
+                    if (self.current_write_frame) |window| {
+                        if (width == 0 and height == 0) while (true) {};
+                        _ = c.DestroyWindow(window);
+                    }
+                    self.current_write_frame = c.CreateWindowExA(
                         0,
                         windowClassOptions.lpszClassName,
                         "iVM Frame",
@@ -605,13 +600,11 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                         @intCast(height),
                         null,
                         null,
-                        instance,
+                        windowClassOptions.hInstance,
                         null,
                     );
-                    _ = window; // autofix
                 },
                 .ADD_SAMPLE,
-                .SET_PIXEL,
                 .READ_PIXEL,
                 => @panic("Unimplemented"),
                 .READ_FRAME => {
@@ -679,8 +672,32 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
             colors: bool = true,
             right_align_machine_state: bool = true,
         };
+        var windowClassOptions = c.WNDCLASSEXA{
+            .cbSize = @sizeOf(c.WNDCLASSEXA),
+            .style = c.CS_OWNDC,
+            .lpfnWndProc = struct {
+                fn wndProc(hWnd: c.HWND, uMsg: c.UINT, wParam: c.WPARAM, lParam: c.LPARAM) callconv(.C) c.LRESULT {
+                    return c.DefWindowProcA(hWnd, uMsg, wParam, lParam);
+                }
+            }.wndProc,
+            .cbClsExtra = 0,
+            .cbWndExtra = 0,
+            .hInstance = null,
+            .hIcon = null,
+            .hCursor = null,
+            .hbrBackground = null,
+            .lpszMenuName = null,
+            .lpszClassName = "iVM_Frame_Viewer",
+            .hIconSm = null,
+        };
+        var windowClass: c.ATOM = 0;
         pub fn run(self: *Self, comptime options: RunOptions) void {
             defer self.debugFlush();
+            if (builtin.os.tag == .windows) {
+                const instance = c.GetModuleHandleA(0);
+                windowClassOptions.hInstance = instance;
+                windowClass = c.RegisterClassExA(&windowClassOptions);
+            }
             if (options.debug) self.debugLog(options.colors, "\n", .{});
             while (!self.terminated) {
                 if (options.debug) {

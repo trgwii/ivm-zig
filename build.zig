@@ -1,39 +1,34 @@
 const std = @import("std");
+const Step = std.Build.Step;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const strip = optimize == .ReleaseFast or optimize == .ReleaseSmall;
 
-    const exe = b.addExecutable(.{
-        .name = "ivm-zig",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .strip = strip,
-    });
-    const exe_debug = b.addExecutable(.{
-        .name = "ivm-zig-debug",
-        .root_source_file = b.path("src/main_debug.zig"),
-        .target = target,
-        .optimize = optimize,
-        .strip = strip,
-    });
+    var exes: [2]*Step.Compile = undefined;
 
-    if (target.result.os.tag == .windows) {
-        exe.linkLibC();
-        exe.linkSystemLibrary("comdlg32");
-        exe_debug.linkLibC();
-        exe_debug.linkSystemLibrary("comdlg32");
+    inline for (.{ "ivm-zig", "ivm-zig-debug" }, .{ "main", "main_debug" }, 0..) |exe_name, src_name, i| {
+        exes[i] = b.addExecutable(.{
+            .name = exe_name,
+            .root_source_file = b.path("src/" ++ src_name ++ ".zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = strip,
+        });
     }
 
-    b.installArtifact(exe);
-    b.installArtifact(exe_debug);
+    if (target.result.os.tag == .windows) {
+        inline for (exes) |exe| {
+            exe.linkLibC();
+            exe.linkSystemLibrary("comdlg32");
+            exe.linkSystemLibrary("Gdi32");
+        }
+    }
 
-    const run_cmd = b.addRunArtifact(exe);
-    const run_debug_cmd = b.addRunArtifact(exe_debug);
+    var progs: [2]*Step.Run = undefined;
 
-    inline for (.{ "hello", "picture" }) |program_name| {
+    inline for (.{ "hello", "picture" }, 0..) |program_name, i| {
         const prog = b.addExecutable(.{
             .name = program_name,
             .root_source_file = b.path("src/tools/programs/" ++ program_name ++ ".zig"),
@@ -41,22 +36,18 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .strip = strip,
         });
-        const prog_cmd = b.addRunArtifact(prog);
-        run_cmd.step.dependOn(&prog_cmd.step);
-        run_debug_cmd.step.dependOn(&prog_cmd.step);
+        progs[i] = b.addRunArtifact(prog);
     }
 
-    run_cmd.step.dependOn(b.getInstallStep());
-    run_debug_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| run_cmd.addArgs(args);
-    if (b.args) |args| run_debug_cmd.addArgs(args);
-
-    const run_step = b.step("run", "run iVM");
-    run_step.dependOn(&run_cmd.step);
-
-    const run_debug_step = b.step("run_debug", "run iVM in debug mode");
-    run_debug_step.dependOn(&run_debug_cmd.step);
+    inline for (exes, .{ "run", "run_debug" }, .{ "run iVM", "run iVM in debug mode" }) |exe, step_name, step_description| {
+        b.installArtifact(exe);
+        const run_cmd = b.addRunArtifact(exe);
+        for (progs) |prog| run_cmd.step.dependOn(&prog.step);
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| run_cmd.addArgs(args);
+        const run_step = b.step(step_name, step_description);
+        run_step.dependOn(&run_cmd.step);
+    }
 
     const tests = b.addTest(.{
         .root_source_file = b.path("src/ivm.zig"),
