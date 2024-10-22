@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .strip = strip,
     });
+
     if (target.result.os.tag == .windows) {
         exe.linkLibC();
         exe.linkSystemLibrary("comdlg32");
@@ -30,13 +31,32 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe_debug);
 
     const run_cmd = b.addRunArtifact(exe);
+    const run_debug_cmd = b.addRunArtifact(exe_debug);
+
+    inline for (.{ "hello", "picture" }) |program_name| {
+        const prog = b.addExecutable(.{
+            .name = program_name,
+            .root_source_file = b.path("src/tools/programs/" ++ program_name ++ ".zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = strip,
+        });
+        const prog_cmd = b.addRunArtifact(prog);
+        run_cmd.step.dependOn(&prog_cmd.step);
+        run_debug_cmd.step.dependOn(&prog_cmd.step);
+    }
 
     run_cmd.step.dependOn(b.getInstallStep());
+    run_debug_cmd.step.dependOn(b.getInstallStep());
 
     if (b.args) |args| run_cmd.addArgs(args);
+    if (b.args) |args| run_debug_cmd.addArgs(args);
 
     const run_step = b.step("run", "run iVM");
     run_step.dependOn(&run_cmd.step);
+
+    const run_debug_step = b.step("run_debug", "run iVM in debug mode");
+    run_debug_step.dependOn(&run_debug_cmd.step);
 
     const tests = b.addTest(.{
         .root_source_file = b.path("src/ivm.zig"),

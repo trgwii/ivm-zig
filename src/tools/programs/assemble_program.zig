@@ -1,4 +1,5 @@
 const std = @import("std");
+const root = @import("root");
 
 fn generate(out: *std.ArrayList(u8), data_start: ?u64, data: []const u8, code: anytype) !void {
     // TODO: integreate with real enum
@@ -15,6 +16,8 @@ fn generate(out: *std.ArrayList(u8), data_start: ?u64, data: []const u8, code: a
                 .add => try out.append(0x20),
                 .AND => try out.append(0x28),
                 .put_byte => try out.append(0xF9),
+                .set_pixel => try out.append(0xFC),
+                .new_frame => try out.append(0xFD),
                 else => @compileError("Unknown instruction " ++ @tagName(instruction)),
             }
         } else switch (instruction[0]) {
@@ -39,36 +42,14 @@ pub fn main() !void {
     var data = std.ArrayList(u8).init(allocator);
     defer data.deinit();
 
-    try data.appendSlice(("Hello, World!\n" ** (1024 * 16)) ++ "\x00");
+    if (@hasDecl(root, "data")) try data.appendSlice(root.data);
 
-    try generate(&code, 0x20, data.items, .{
-        .get_pc,
-        .get_sp,
-        .load8,
-        .{ .push1, 0x1f },
-        .add,
-        .get_sp,
-        .load8,
-        .load1,
-        .get_sp,
-        .load8,
-        .{ .jz_fwd, 0x0d },
-        .put_byte,
-        .{ .push1, 0x01 },
-        .add,
-        .get_sp,
-        .{ .push1, 0x08 },
-        .add,
-        .load8,
-        .{ .push1, 0x05 },
-        .add,
-        .jump,
-        .get_sp,
-        .{ .push1, 0x18 },
-        .add,
-        .set_sp,
-        .exit,
-    });
+    try generate(
+        &code,
+        if (@hasDecl(root, "data_start")) root.data_start else null,
+        data.items,
+        root.code,
+    );
 
-    try std.fs.cwd().writeFile(.{ .sub_path = "hello.ivm", .data = code.items });
+    try std.fs.cwd().writeFile(.{ .sub_path = root.output, .data = code.items });
 }

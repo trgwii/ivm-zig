@@ -24,8 +24,10 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
 
         stack_size: u64 = N,
 
-        current_frame: if (builtin.target.os.tag == .windows) ?c.HANDLE else void =
+        current_read_frame: if (builtin.target.os.tag == .windows) ?c.HANDLE else void =
             if (builtin.target.os.tag == .windows) null else {},
+
+        current_write_frame: void,
 
         buffered_stderr: if (machine_options.buffered_io) std.io.BufferedWriter(BufferedIOBufferSize, std.fs.File.Writer) else void =
             undefined,
@@ -39,7 +41,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
             self.program_counter = 0;
             self.stack_pointer = N;
             self.stack_size = N;
-            if (builtin.target.os.tag == .windows) self.current_frame = null;
+            if (builtin.target.os.tag == .windows) self.current_read_frame = null;
             self.initBufferedIO();
         }
 
@@ -142,6 +144,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     .CHECK,
                     .PUT_BYTE,
                     .PUT_CHAR,
+                    .NEW_FRAME,
                     => self.debugLog(colors, "\x1b[33m{s}\x1b[0m\n", .{@tagName(inst)}),
                     .PUSH0 => {
                         self.debugLog(colors, "\x1b[33m{s}\x1b[0m\n", .{@tagName(inst)});
@@ -157,7 +160,6 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     // .READ_CHAR,
                     // .ADD_SAMPLE,
                     // .SET_PIXEL,
-                    // .NEW_FRAME,
                     // .READ_PIXEL,
                     // .READ_FRAME,
                     // => @panic("Unimplemented"),
@@ -215,7 +217,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     self.stack_pointer,
                     (N - self.stack_pointer) / 8,
                     self.stack_size / 8,
-                    if (self.current_frame) |_| comptime maybeRemoveColors("\x1b[36mF\x1b[0m") else comptime maybeRemoveColors("\x1b[90m_\x1b[0m"),
+                    if (self.current_read_frame) |_| comptime maybeRemoveColors("\x1b[36mF\x1b[0m") else comptime maybeRemoveColors("\x1b[90m_\x1b[0m"),
                     if (self.terminated) comptime maybeRemoveColors("\x1b[31mT\x1b[0m") else comptime maybeRemoveColors("\x1b[32mR\x1b[0m"),
                 }) catch unreachable;
             } else {
@@ -565,9 +567,51 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                         std.io.getStdOut().writer().writeByte(char) catch unreachable;
                     }
                 },
+                .NEW_FRAME => {
+                    // open window with dimensions from stack
+                    const rate = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const height = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    const width = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
+                    if (log) self.debugLog(options.colors, " \x1b[32m{d}\x1b[90m x \x1b[32m{d}\x1b[90m r{d}\x1b[0m", .{ width, height, rate });
+                    const instance = c.GetModuleHandleA(0);
+                    const windowClassOptions = c.WNDCLASSEXA{
+                        .cbSize = @sizeOf(c.WNDCLASSEXA),
+                        .style = c.CS_OWNDC,
+                        .lpfnWndProc = struct {
+                            fn wndProc(hWnd: c.HWND, uMsg: c.UINT, wParam: c.WPARAM, lParam: c.LPARAM) callconv(.C) c.LRESULT {
+                                return c.DefWindowProcA(hWnd, uMsg, wParam, lParam);
+                            }
+                        }.wndProc,
+                        .cbClsExtra = 0,
+                        .cbWndExtra = 0,
+                        .hInstance = instance,
+                        .hIcon = null,
+                        .hCursor = null,
+                        .hbrBackground = null,
+                        .lpszMenuName = null,
+                        .lpszClassName = "iVM Frame",
+                        .hIconSm = null,
+                    };
+                    const windowClass = c.RegisterClassExA(&windowClassOptions);
+                    _ = windowClass; // autofix
+                    const window = c.CreateWindowExA(
+                        0,
+                        windowClassOptions.lpszClassName,
+                        "iVM Frame",
+                        c.WS_OVERLAPPEDWINDOW | c.WS_VISIBLE,
+                        c.CW_USEDEFAULT,
+                        c.CW_USEDEFAULT,
+                        @intCast(width),
+                        @intCast(height),
+                        null,
+                        null,
+                        instance,
+                        null,
+                    );
+                    _ = window; // autofix
+                },
                 .ADD_SAMPLE,
                 .SET_PIXEL,
-                .NEW_FRAME,
                 .READ_PIXEL,
                 => @panic("Unimplemented"),
                 .READ_FRAME => {
@@ -621,7 +665,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                         self.terminated = true;
                         return;
                     }
-                    self.current_frame = fd;
+                    self.current_read_frame = fd;
                 },
                 _ => {
                     self.debugLog(options.colors, "\x1b[33m0x{x:0>2}\x1b[90m: \x1b[31mUnknown instruction\x1b[0m\n", .{@intFromEnum(inst)});
@@ -639,14 +683,17 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
             defer self.debugFlush();
             if (options.debug) self.debugLog(options.colors, "\n", .{});
             while (!self.terminated) {
-                if (options.debug) self.printDebugState(options.colors, options.right_align_machine_state);
+                if (options.debug) {
+                    self.printDebugState(options.colors, options.right_align_machine_state);
+                    self.debugFlush();
+                }
                 self.main(options);
             }
             if (builtin.os.tag == .windows) {
-                if (self.current_frame) |handle| {
+                if (self.current_read_frame) |handle| {
                     if (c.CloseHandle(handle) == 0) {
                         @panic("TODO: GetLastError()");
-                    } else self.current_frame = null;
+                    } else self.current_read_frame = null;
                 }
             }
             if (options.debug) self.printDebugState(options.colors, options.right_align_machine_state);
