@@ -2,7 +2,7 @@ const std = @import("std");
 const Machine = @import("ivm.zig").Machine;
 const root = @import("root");
 
-const VM = Machine(1024 * 1024 * 64, .{ .strange_push0_behavior = true });
+const VM = Machine(1024 * 1024 * 64, .{ .strange_push0_behavior = false, .flush_every_line = true });
 
 pub fn main() !void {
     var arg_mem: [8192]u8 = undefined;
@@ -20,6 +20,8 @@ pub fn main() !void {
         std.io.getStdIn().reader();
 
     const program_length = try input_reader.readAll(&machine.memory);
+
+    @memset(machine.memory[program_length..], 0);
 
     try machine.setProgramLength(program_length);
 

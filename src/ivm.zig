@@ -27,7 +27,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
         current_read_frame: if (builtin.target.os.tag == .windows) ?c.HANDLE else void =
             if (builtin.target.os.tag == .windows) null else {},
 
-        current_write_frame: c.HWND,
+        current_write_frame: if (builtin.target.os.tag == .windows) c.HWND else void,
 
         buffered_stderr: if (machine_options.buffered_io) std.io.BufferedWriter(BufferedIOBufferSize, std.fs.File.Writer) else void =
             undefined,
@@ -244,6 +244,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
             StackOverflow,
             StackPointerOutOfBounds,
             ProgramCounterOutOfBounds,
+            ReadCharFailed,
         };
 
         fn put(self: *Self, comptime T: type, x: T, a: u64) Error!void {
@@ -391,7 +392,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     const a = self.fetch(u8) catch |err| return self.exception(log, err, options.colors, .{});
                     const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     if (log) self.debugLog(options.colors, " \x1b[90mif (\x1b[32m0x{x:0>2}\x1b[90m == \x1b[32m0\x1b[90m) then \x1b[35mPC\x1b[90m -= (\x1b[32m0x{x:0>2}\x1b[90m + \x1b[32m1\x1b[90m)\x1b[0m", .{ x, a });
-                    if (x == 0) self.program_counter -= a + 1;
+                    if (x == 0) self.program_counter -= @as(u64, a) + 1;
                 },
                 .SET_SP => {
                     const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
@@ -453,7 +454,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 },
                 .LOAD8 => {
                     const a = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
-                    const x = self.get(u64, a) catch |err| return self.exception(log, err, options.colors, .{});
+                    const x = self.get(u64, a) catch |err| return self.exception(log, err, options.colors, .{a});
                     if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>2} \x1b[90mfrom \x1b[34m0x{x:0>2}\x1b[0m", .{ x, a });
                     self.push(x) catch |err| return self.exception(log, err, options.colors, .{});
                 },
@@ -554,7 +555,11 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     if (log) self.debugLog(options.colors, " \x1b[32m0x{x:0>2}\x1b[0m", .{x});
                     if (x >= 2) self.terminated = true;
                 },
-                .READ_CHAR => @panic("Unimplemented"),
+                .READ_CHAR => {
+                    self.debugFlush();
+                    const char = std.io.getStdIn().reader().readByte() catch return self.exception(log, Error.ReadCharFailed, options.colors, .{});
+                    self.push(char) catch |err| return self.exception(log, err, options.colors, .{});
+                },
                 .PUT_BYTE, .PUT_CHAR => {
                     const char: u8 = @intCast(self.pop() catch |err| return self.exception(log, err, options.colors, .{}));
                     if (log) self.debugLog(options.colors, " \x1b[32m'{c}'\x1b[0m", .{char});
@@ -574,7 +579,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     const y = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const x = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     if (log) self.debugLog(options.colors, " \x1b[32m{d}\x1b[90m,\x1b[32m{d}\x1b[90m {x:0>2}{x:0>2}{x:0>2}\x1b[0m", .{ x, y, r, g, b });
-                    if (self.current_write_frame != null) {
+                    if (builtin.target.os.tag == .windows and self.current_write_frame != null) {
                         const dc = c.GetDC(self.current_write_frame);
                         _ = c.SetPixel(dc, @intCast(x), @intCast(y), c.RGB(r, g, b));
                     }
@@ -585,6 +590,7 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                     const height = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     const width = self.pop() catch |err| return self.exception(log, err, options.colors, .{});
                     if (log) self.debugLog(options.colors, " \x1b[32m{d}\x1b[90m x \x1b[32m{d}\x1b[90m r{d}\x1b[0m", .{ width, height, rate });
+                    if (builtin.target.os.tag != .windows) @panic("Unimplemented!");
                     if (self.current_write_frame) |window| {
                         if (width == 0 and height == 0) while (true) {};
                         _ = c.DestroyWindow(window);
@@ -698,10 +704,16 @@ pub fn Machine(comptime N: u64, comptime machine_options: MachineOptions) type {
                 windowClassOptions.hInstance = instance;
                 windowClass = c.RegisterClassExA(&windowClassOptions);
             }
-            if (options.debug) self.debugLog(options.colors, "\n", .{});
+            if (options.debug) {
+                self.debugLog(options.colors, "\n", .{});
+                self.debugLog(options.colors, "Program size: {}, stack size: {}\n", .{ N - self.stack_size, self.stack_size });
+                self.debugFlush();
+            }
             while (!self.terminated) {
                 if (options.debug) {
                     self.printDebugState(options.colors, options.right_align_machine_state);
+                    // self.printMemory(options.colors, N - self.stack_size);
+                    // self.printProgram(options.colors, N - self.stack_size);
                     self.debugFlush();
                 }
                 self.main(options);
