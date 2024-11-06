@@ -15,7 +15,7 @@ pub fn main() !void {
     machine.init();
 
     const input_reader = if (args.len > 1)
-        (try std.fs.cwd().openFile(args[1], .{})).reader()
+        (try std.fs.cwd().openFile(args[args.len - 1], .{})).reader()
     else
         std.io.getStdIn().reader();
 
